@@ -1,0 +1,10 @@
+Shiran;Thilcu;Iorwen;Roceleb;Botinu
+Irfela;Romfin;Roceleb;Botinu;Fanrionlal
+Fanrionlal;Iorwen;Thilcu;Nasbel;Irfela
+Botinu;Darmoril;Romfin;Irfela;Shiran
+Roceleb;Nasbel;Irfela;Shiran;Thilcu
+Thilcu;Shiran;Fanrionlal;Romfin;Roceleb
+Nasbel;Roceleb;Darmoril;Fanrionlal;Iorwen
+Iorwen;Fanrionlal;Shiran;Darmoril;Nasbel
+Romfin;Irfela;Botinu;Thilcu;Darmoril
+Darmoril;Botinu;Nasbel;Iorwen;Romfin
