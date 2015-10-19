@@ -7,204 +7,300 @@ import javax.swing.text.Style;
 import javax.swing.text.StyleConstants;
 import javax.swing.text.StyledDocument;
 import java.awt.*;
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
+import java.awt.event.WindowEvent;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * A simple Swing-based client for the chat server. Graphically it is a frame with a text field for entering messages
- * and a textarea to see the whole dialog.
  * <p>
- * The client follows the Chat Protocol which is as follows. When the server sends "SUBMITNAME" the client replies with
- * the desired screen name. The server will keep sending "SUBMITNAME" requests as long as the client submits screen
- * names that are already in use. When the server sends a line beginning with "NAMEACCEPTED" the client is now allowed
- * to start sending the server arbitrary strings to be broadcast to all chatters connected to the server. When the
- * server sends a line beginning with "MESSAGE " then all characters following this string should be displayed in its
- * message area.
- * <p>
- * http://cs.lmu.edu/~ray/notes/javanetexamples/
+ * Adaptado de: http://cs.lmu.edu/~ray/notes/javanetexamples/
  */
 public class Main {
 
+    //Lista dos contatos online
     private static List<Contact> onlineContacts;
 
-    private static ScheduledExecutorService ses = Executors.newSingleThreadScheduledExecutor();
+    //Nome desse cliente
+    private static String clientName;
+    //IP usado para escutar conexao com outros clientes
+    private static String clientMessagesIp;
+    //Porta usada para escutar conexao com outros clientes
+    private static String clientMessagesPort;
+
+    static JFrame frame = new JFrame("Melhor cliente de chat dos anos 90");
+
+    static JPanel controlsPanel = new JPanel();
+
+    static JLabel title = new JLabel("");
+    static JTextPane messagesArea = new JTextPane();
+    static JTextField inputField = new JTextField(25);
+
+    static JComboBox<Contact> contactListSelection;
+
+    static StyledDocument doc;
+
+    static JScrollPane scrollPane;
+    static JScrollBar scrollPaneBar;
+    static UIDefaults defs = UIManager.getDefaults();
+    static Style messagesStyle;
+
+    static Style notificationStyle, helpStyle;
+
 
     public static void main(String[] args) throws IOException, BadLocationException {
-        Main client = new Main();
-        client.frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        client.frame.setVisible(true);
+        defineInterface();
+
+        //Cria o socket que escuta conexoes de outros contatos
+        ServerSocket listener = new ServerSocket(0);
+        clientMessagesIp = listener.getInetAddress().getHostAddress();
+        clientMessagesPort = String.valueOf(listener.getLocalPort());
+        System.out.println("Cliente ira escutar outros clientes em " + clientMessagesIp + ":" + clientMessagesPort);
+
+        //Cria o socket para conexao com o servidor
+        ServerHandler serverHandler = new ServerHandler();
+        serverHandler.start();
+
         try {
-            client.run();
+            System.out.println("Cliente escutando outros clientes...");
+            while (true) {
+                new ContactHandler(listener.accept()).start();
+            }
         } finally {
-            ses.shutdown();
+            listener.close();
         }
     }
 
-    BufferedReader in;
-    PrintWriter out;
-    public JFrame frame = new JFrame("Melhor cliente de chat dos anos 90");
-    JTextField textField = new JTextField(50);
-    JTextPane messageArea = new JTextPane();
-    StyledDocument doc;
-    JScrollPane scrollPane;
-    JScrollBar scrollPaneBar;
-    UIDefaults defs = UIManager.getDefaults();
-
-    Style publicMessageStyle;
-    Style privateMessageStyle;
-    Style notificationStyle;
-
-    Style helpStyle;
-
-    /**
-     * Constructs the client by laying out the GUI and registering a listener with the textfield so that pressing Return
-     * in the listener sends the textfield contents to the server. Note however that the textfield is initially NOT
-     * editable, and only becomes editable AFTER the client receives the NAMEACCEPTED message from the server.
-     */
-    public Main() {
-
+    private static void defineInterface() {
         // Define estilos para textos
         defs.put("TextPane.background", new ColorUIResource(Color.white));
-        doc = messageArea.getStyledDocument();
-        publicMessageStyle = messageArea.addStyle("publicMessage", null);
-        privateMessageStyle = messageArea.addStyle("privateMessage", null);
-        notificationStyle = messageArea.addStyle("notification", null);
-        helpStyle = messageArea.addStyle("help", null);
-        StyleConstants.setBold(publicMessageStyle, true);
-        StyleConstants.setForeground(privateMessageStyle, Color.black);
-        StyleConstants.setBold(privateMessageStyle, true);
-        StyleConstants.setForeground(privateMessageStyle, Color.blue);
+        doc = messagesArea.getStyledDocument();
+        messagesStyle = messagesArea.addStyle("publicMessage", null);
+        notificationStyle = messagesArea.addStyle("notification", null);
+        helpStyle = messagesArea.addStyle("help", null);
+        StyleConstants.setBold(messagesStyle, true);
         StyleConstants.setForeground(notificationStyle, Color.red);
         StyleConstants.setForeground(helpStyle, Color.gray);
 
-        // Define estilo da janela
-        textField.setEditable(false);
-        messageArea.setEditable(false);
-        frame.getContentPane().add(textField, "North");
-        scrollPane = new JScrollPane(messageArea);
+        // Define janela
+        frame.getContentPane().add(title, BorderLayout.NORTH);
+        messagesArea.setEditable(false);
+        scrollPane = new JScrollPane(messagesArea);
         scrollPaneBar = scrollPane.getVerticalScrollBar();
-        frame.getContentPane().add(scrollPane, "Center");
+        frame.getContentPane().add(scrollPane, BorderLayout.CENTER);
+
+        contactListSelection = new JComboBox<>();
+        contactListSelection.setSize(20, 80);
+        inputField.setEditable(false);
+        controlsPanel.add(contactListSelection, BorderLayout.EAST);
+        controlsPanel.add(inputField, BorderLayout.WEST);
+        frame.getContentPane().add(controlsPanel, BorderLayout.SOUTH);
+
         frame.setSize(500, 400);
 
         // Adiciona listener para enviar texto na linha de entrada
-        textField.addActionListener(new ActionListener() {
-            /**
-             * Responds to pressing the enter key in the textfield by sending the contents of the text field to the
-             * server. Then clear the text area in preparation for the next message.
-             */
-            public void actionPerformed(ActionEvent e) {
-                String command = textField.getText();
-                if (command.equals("HELP")) {
-                    try {
-                        printHelp();
-                    } catch (BadLocationException ignore) {
-                    }
-                    scrollPaneBar.setValue(scrollPaneBar.getMaximum());
-                } else {
-                    out.println(command);
-                }
-                textField.setText("");
+        inputField.addActionListener(e -> {
+            String command = inputField.getText();
+            Contact recipient = (Contact) contactListSelection.getSelectedItem();
+
+            try {
+                Socket socket = new Socket(recipient.getIp(), Integer.valueOf(recipient.getPort()));
+                //Fluxo que envia mensagens ao contato
+                PrintWriter contactOut = new PrintWriter(socket.getOutputStream(), true);
+                contactOut.println(clientName + ": " + command);
+                doc.insertString(doc.getLength(), clientName + ": " + command + "\n", notificationStyle);
+            } catch (IOException | BadLocationException e1) {
+                e1.printStackTrace();
             }
-        });
-    }
 
-    /**
-     * Conecta ao servidor e entra no loop de processamento
-     */
-    private void run() throws IOException, BadLocationException {
-
-        // Faz conexao e inicia streams de entrada e saida
-        String serverAddress = getServerAddress();
-        Socket socket = new Socket(serverAddress, 9001);
-        in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-        out = new PrintWriter(socket.getOutputStream(), true);
-
-        // Processa todas as mensagens do servidor, de acordo com o protocolo
-        while (true) {
-            String line = in.readLine();
-
-            if (line.startsWith("WHORU")) {
-                out.println(getName());
-                continue;
-
-            } else if (line.startsWith("CLIST")) {
-                final String contactsMsg = line.split(" ")[1];
-                onlineContacts = MessageParser.parseContactsFromMessage(contactsMsg);
-
-                ses.scheduleAtFixedRate(() -> {
-                    out.println("KEEPA");
-                }, 0, 1, TimeUnit.SECONDS);
-
-                textField.setEditable(true);
-                printHelp();
-
-            } else if (line.startsWith("CONAT")) {
-                doc.insertString(doc.getLength(), "Lista de clientes: " + line.substring(5) + "\n", notificationStyle);
-
-            } else if (line.startsWith("CONIN")) {
-                doc.insertString(doc.getLength(), "Lista de contatos: " + line.substring(6) + "\n", notificationStyle);
-
-            } else if (line.startsWith("KEPTA")) {
-                doc.insertString(doc.getLength(), "Lista de IPs: " + line.substring(6) + "\n", notificationStyle);
-
-            } else if (line.startsWith("MESSAGE")) {
-                if (line.length() > 8 && line.charAt(8) == '*') {
-                    doc.insertString(doc.getLength(), line.substring(8) + "\n", privateMessageStyle);
-                } else {
-                    doc.insertString(doc.getLength(), line.substring(8) + "\n", publicMessageStyle);
-                }
-
-            }
             scrollPaneBar.setValue(scrollPaneBar.getMaximum());
+            inputField.setText("");
+        });
 
+        frame.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
+        frame.setVisible(true);
+    }
+
+    private static void updateContactActive(String contactData) throws BadLocationException {
+        final String contactName = contactData.split("/")[0];
+        Contact contact = MessageParser.parseContactsFromMessage(contactData).get(0);
+        onlineContacts.add(contact);
+        contactListSelection.addItem(contact);
+        inputField.setEditable(true);
+
+        doc.insertString(doc.getLength(), contactName + " esta online.\n", notificationStyle);
+    }
+
+    private static void updateContactInactive(String contactName) throws BadLocationException {
+        Contact toRemove = new Contact();
+        toRemove.setName(contactName);
+        contactListSelection.removeItem(toRemove);
+        onlineContacts.remove(toRemove);
+        if (onlineContacts.size() == 0) {
+            inputField.setEditable(false);
         }
+
+        doc.insertString(doc.getLength(), contactName + " esta offline.\n", notificationStyle);
     }
 
     /**
-     * Mostra uma caixa de di�logo perguntando endere�o do servidor
+     * Mostra uma caixa de dialogo perguntando endereco do servidor
      */
-    private String getServerAddress() {
+    private static String getServerAddress() {
         return JOptionPane.showInputDialog(frame, "Endereco IP do servidor:", "Bem vindo!",
                 JOptionPane.QUESTION_MESSAGE);
     }
 
     /**
-     * Mostra uma caixa de di�logo perguntando nome de usuario
+     * Mostra uma caixa de dialogo perguntando nome de usuario
      */
-    private String getName() {
-        return JOptionPane.showInputDialog(frame, "Escolha um nome de usuario:", "Nome de Usuario",
+    private static String getClientName() {
+        return JOptionPane.showInputDialog(frame, "Digite o nome de usuario:", "Nome de Usuario",
                 JOptionPane.PLAIN_MESSAGE);
     }
 
     /**
-     * Mostra uma caixa de di�logo perguntando contato do usuario
+     * Mostra conteudo de ajuda com comandos disponiveis para o usuario
      */
-    private String getContact() {
-        return JOptionPane.showInputDialog(frame, "Email de contato:", "Email", JOptionPane.PLAIN_MESSAGE);
+    private static void printHelp() throws BadLocationException {
+        doc.insertString(doc.getLength(), "= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =\n", helpStyle);
+        doc.insertString(doc.getLength(), "Selecione um contato, digite a mensagem e aperte Enter.\n", helpStyle);
+        doc.insertString(doc.getLength(), "= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =\n", helpStyle);
     }
 
-    /**
-     * Mostra conte�do de ajuda com comandos dispon�veis para o usu�rio
-     */
-    private void printHelp() throws BadLocationException {
-        doc.insertString(doc.getLength(), "= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =\n", helpStyle);
-        doc.insertString(doc.getLength(), "Comandos dispon�veis:\n", helpStyle);
-        doc.insertString(doc.getLength(), "\n", helpStyle);
-        doc.insertString(doc.getLength(), "GETNAMES: Lista nomes de usu�rios conectados\n", helpStyle);
-        doc.insertString(doc.getLength(), "GETCONTACTS: Lista contatos de usu�rios conectados\n", helpStyle);
-        doc.insertString(doc.getLength(), "GETIPS: Lista IPs de usu�rios conectados\n", helpStyle);
-        doc.insertString(doc.getLength(), "Mensagem p�blica/broadcast: Simplesmente digite-a\n", helpStyle);
-        doc.insertString(doc.getLength(), "Mensagem privada: Inicie com o nome do usu�rio \"@user msg\"\n", helpStyle);
-        doc.insertString(doc.getLength(), "HELP: Mostra essa mensagem\n", helpStyle);
-        doc.insertString(doc.getLength(), "= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =\n", helpStyle);
+    //Classe que gerencia a conexao com o servidor
+    private static class ServerHandler extends Thread {
+
+        //Objeto para ficar executando o Keep Alive
+        private static ScheduledExecutorService ses = Executors.newSingleThreadScheduledExecutor();
+
+        //Fluxo que recebe mensagens do servidor
+        static BufferedReader serverIn;
+
+        //Fluxo que envia mensagens ao servidor
+        static PrintWriter serverOut;
+
+        /**
+         * Conecta ao servidor e entra no loop de processamento
+         */
+        public void run() {
+
+            try {
+                String serverAddress = getServerAddress();
+                if (serverAddress == null) {
+                    frame.dispatchEvent(new WindowEvent(frame, WindowEvent.WINDOW_CLOSING));
+                    return;
+                }
+                Socket socket = new Socket(serverAddress, 9001);
+                serverIn = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                serverOut = new PrintWriter(socket.getOutputStream(), true);
+
+                // Processa todas as mensagens do servidor, de acordo com o protocolo
+                while (true) {
+                    String line = serverIn.readLine();
+                    System.out.println("Received:" + line);
+
+                    if (line == null || line.startsWith("null")) {
+                        //Servidor nao respondendo KEPTA.
+                        doc.insertString(doc.getLength(), "ERRO: Servidor desconectou. Favor reiniciar o programa\n",
+                                notificationStyle);
+                        contactListSelection.removeAll();
+                        inputField.setEditable(false);
+                        return;
+
+                    } else if (line.startsWith("WHORU")) {
+                        //Servidor perguntando Who Are You
+                        clientName = getClientName();
+                        if (clientName == null) {
+                            frame.dispatchEvent(new WindowEvent(frame, WindowEvent.WINDOW_CLOSING));
+                            return;
+                        }
+                        serverOut.println(clientName + "/" + clientMessagesIp + ":" + clientMessagesPort);
+
+                    } else if (line.startsWith("CLIST")) {
+                        //Conexao com servidor bem sucedida.
+                        //Inicializa interface cliente.
+                        title.setText("Conectado como " + clientName + " no servidor " + serverAddress);
+                        final String[] contactsMsg = line.split(" ");
+                        if (contactsMsg.length > 1) {
+                            //Se tiver recebido pelo menos algum contato
+                            onlineContacts = MessageParser.parseContactsFromMessage(contactsMsg[1]);
+                            for (Contact contact : onlineContacts) {
+                                contactListSelection.addItem(contact);
+                            }
+                            doc.insertString(doc.getLength(), "Contatos online:" + onlineContacts + "\n", notificationStyle);
+                        } else {
+                            //Se nao tinver recebido nenhum contato online
+                            onlineContacts = new ArrayList<>();
+                            doc.insertString(doc.getLength(), "Nenhum contato online.\n", notificationStyle);
+                        }
+
+                        //Comeca a enviar mensagens de Keep Alive
+                        ses.scheduleAtFixedRate(() -> serverOut.println("KEEPA"), 0, 1, TimeUnit.SECONDS);
+
+                        inputField.setEditable(true);
+                        printHelp();
+
+                    } else if (line.startsWith("CONAT")) {
+                        updateContactActive(line.split(" ")[1]);
+
+                    } else if (line.startsWith("CONIN")) {
+                        updateContactInactive(line.split(" ")[1]);
+                    }
+                }
+            } catch (Exception ignored) {
+            } finally {
+                //Finaliza o servico que envia Keep Alive ao servidor
+                ses.shutdown();
+            }
+
+        }
+
+    }
+
+    //Classe que recebe conexoes de outros clientes/contatos
+    private static class ContactHandler extends Thread {
+
+        private Socket socket;
+
+        //Fluxo de entrada de dados. Recebe do cliente
+        private BufferedReader in;
+
+        public ContactHandler(Socket socket) {
+            this.socket = socket;
+        }
+
+        public void run() {
+            try {
+                // Create character streams for the socket.
+                while (true) {
+                    in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                    final String message = in.readLine();
+
+                    if (message != null) {
+                        doc.insertString(doc.getLength(), message + "\n", messagesStyle);
+                        break;
+                    }
+                }
+
+            } catch (IOException | BadLocationException e) {
+                e.printStackTrace();
+            } finally {
+                try {
+                    socket.close();
+                } catch (IOException ignored) {
+                }
+            }
+
+        }
+
     }
 }

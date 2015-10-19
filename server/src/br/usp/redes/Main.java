@@ -39,7 +39,7 @@ public class Main {
     private static final int MISSED_KEEP_ALIVE_LIMIT = 5;
 
     /**
-     * Executa o servidor, escutando na porta e criando uma thread Handler para cada conexao
+     * Executa o servidor, escutando na porta e criando uma thread ClientHandler para cada conexao
      */
     public static void main(String[] args) throws IOException {
 
@@ -49,7 +49,7 @@ public class Main {
         System.out.println("Servidor executando e esperando por clientes...");
         try {
             while (true) {
-                new Handler(listener.accept()).start();
+                new ClientHandler(listener.accept()).start();
             }
         } finally {
             listener.close();
@@ -88,9 +88,11 @@ public class Main {
     /**
      * Classe que eh instanciada para cada conexao com cada cliente e gerencia a comunicacao com ele.
      */
-    private static class Handler extends Thread {
+    private static class ClientHandler extends Thread {
 
         private String clientName;
+        private String clientIp;
+        private String clientPort;
         private List<String> contacts;
 
         private Socket socket;
@@ -101,7 +103,7 @@ public class Main {
         //Fluxo de saida de dados. Envia para o cliente
         private PrintWriter out;
 
-        public Handler(Socket socket) {
+        public ClientHandler(Socket socket) {
             this.socket = socket;
         }
 
@@ -123,18 +125,21 @@ public class Main {
                 // must be done while locking the set of names.
                 while (true) {
                     out.println("WHORU");
-                    clientName = in.readLine();
-                    if (clientName == null) {
+                    final String connectionData = in.readLine();
+                    clientName = connectionData.split("/")[0];
+                    clientIp = connectionData.split("/")[1].split(":")[0];
+                    clientPort = connectionData.split("/")[1].split(":")[1];
+                    if (clientName == null || clientName.equals("null")) {
                         return;
                     }
                     synchronized (clients) {
-                        if (clientNameIndex(clientName) != -1 && clientContacts.containsKey(clientName)) {
+                        if (clientNameIndex(clientName) != -1 || !clientContacts.containsKey(clientName)) {
                             out.println("Denied. Not a valid client.");
                         } else {
                             Client c = new Client();
                             c.setName(clientName);
-                            c.setIp(socket.getLocalAddress().toString());
-                            c.setPort(String.valueOf(socket.getLocalPort()));
+                            c.setIp(clientIp);
+                            c.setPort(clientPort);
                             clients.add(c);
                             break;
                         }
@@ -146,11 +151,11 @@ public class Main {
                 contacts = clientContacts.get(clientName);
 
                 // Avisa aos contatos conectados do cliente que ele esta conectando.
-                System.out.println("(@" + clientName + ") conectou-se.");
                 final StringBuilder clientNameIp = new StringBuilder();
-                clientNameIp.append(clientName)
-                        .append("/").append(socket.getLocalAddress().toString())
-                        .append(":").append(String.valueOf(socket.getLocalPort()));
+                clientNameIp.append(clientName).append("/")
+                        .append(clientIp).append(":")
+                        .append(clientPort);
+                System.out.println(clientNameIp + " conectou-se atraves de " + socket.getRemoteSocketAddress());
                 for (int i = 0; i < writers.size(); i++) {
                     if (contacts.contains(clients.get(i).getName())) {
                         final PrintWriter writer = writers.get(i);
@@ -168,8 +173,8 @@ public class Main {
                         clientNameIndex = clientNameIndex(contact);
                     }
                     if (clientNameIndex != -1) {
-                        onlineContactList.append(clients.get(clientNameIndex).getName())
-                                .append("/").append(clients.get(clientNameIndex).getIp())
+                        onlineContactList.append(clients.get(clientNameIndex).getName()).append("/")
+                                .append(clients.get(clientNameIndex).getIp())
                                 .append(":").append(clients.get(clientNameIndex).getPort());
                         if (i < contacts.size() - 1) {
                             onlineContactList.append(";");
@@ -180,26 +185,35 @@ public class Main {
 
                 // Depois do protocolo inicial, aceita mensagens de Keep Alive (KEEPA) dos clientes, e responde KEPTA.
                 // Caso um cliente fique sem mandar MISSED_KEEP_ALIVE_LIMIT por KEEP_ALIVE_INTERVAL, desconecta.
-                long lastKeepAlive = System.currentTimeMillis();
-                while ((System.currentTimeMillis() - lastKeepAlive) < KEEP_ALIVE_INTERVAL * MISSED_KEEP_ALIVE_LIMIT) {
-                    String input = in.readLine();
-                    if (input == null) {
-                        return;
-                    }
-                    // Keep Alive
-                    if (input.startsWith("KEEPA")) {
-                        lastKeepAlive = System.currentTimeMillis();
-                        out.println("KEPTA");
-                        continue;
+                socket.setSoTimeout(KEEP_ALIVE_INTERVAL);
+                int missingKeepAlive = 0;
+                while (missingKeepAlive <= MISSED_KEEP_ALIVE_LIMIT) {
+                    try {
+                        String input = in.readLine();
+                        if (input == null) {
+                            return;
+                        }
+                        // Keep Alive
+                        if (input.startsWith("KEEPA")) {
+                            missingKeepAlive = 0;
+                            out.println("KEPTA");
+                        }
+                    } catch (IOException timeout) {
+                        missingKeepAlive++;
+                        //Para evitar warnings desnecessarios
+                        if (missingKeepAlive > 1) {
+                            System.out.println(clientName + " nao enviou KEEPA " + missingKeepAlive);
+                        }
                     }
                 }
             } catch (IOException e) {
                 System.out.println(e);
             } finally {
                 // Cliente esta saindo. Precisa remover ele das listas
-                if (clientName != null) {
+                if (clientName != null && !clientName.equals("null")) {
                     int clientIndex = clientNameIndex(clientName);
                     clients.remove(clientIndex);
+                    System.out.println(clientName + " desconectou.");
                 }
                 if (out != null) {
                     writers.remove(out);
@@ -207,7 +221,6 @@ public class Main {
                     writers.removeAll(Collections.singleton(null));
                 }
                 // Avisa que o cliente esta desconectando aos seus contatos
-                System.out.println("(@" + clientName + ") desconectou.");
                 for (int i = 0; i < clients.size(); i++) {
                     if (contacts.contains(clients.get(i).getName())) {
                         PrintWriter writer = writers.get(i);
